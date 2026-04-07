@@ -17,6 +17,25 @@ def _clip_and_sort(values: dict[str, float]) -> dict[str, float]:
     return {"low": ordered[0], "base": ordered[1], "high": ordered[2]}
 
 
+def _history_with_anchor(
+    history: pd.DataFrame,
+    anchor_date: date | None = None,
+    anchor_spot: float | None = None,
+) -> pd.DataFrame:
+    anchored_history = history.copy()
+    if anchor_date is not None and anchor_spot is not None:
+        anchor_timestamp = pd.Timestamp(anchor_date)
+        anchored_history = anchored_history.loc[anchored_history["date"] != anchor_timestamp]
+        anchored_history = pd.concat(
+            [
+                anchored_history,
+                pd.DataFrame([{"date": anchor_timestamp, "spot": float(anchor_spot)}]),
+            ],
+            ignore_index=True,
+        )
+    return anchored_history.sort_values("date").reset_index(drop=True)
+
+
 def moving_average_forecast(
     history: pd.DataFrame,
     targets: list[date],
@@ -98,6 +117,8 @@ def build_forecast_frame(
     history: pd.DataFrame,
     targets: list[date],
     method_name: str,
+    anchor_date: date | None = None,
+    anchor_spot: float | None = None,
 ) -> pd.DataFrame:
     method_map = {
         "Moving Average": moving_average_forecast,
@@ -105,7 +126,8 @@ def build_forecast_frame(
         "Scenario Distribution": scenario_distribution_forecast,
     }
     forecast_fn = method_map[method_name]
-    forecast_dict = forecast_fn(history, targets)
+    forecast_history = _history_with_anchor(history, anchor_date=anchor_date, anchor_spot=anchor_spot)
+    forecast_dict = forecast_fn(forecast_history, targets)
 
     rows = []
     for target in targets:

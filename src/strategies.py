@@ -53,7 +53,9 @@ def evaluate_forward(receipts: pd.DataFrame, forecast_df: pd.DataFrame, scenario
     for row in receipts.itertuples(index=False):
         spot_rate = _receipt_spot(forecast_df, row.settlement_date, scenario)
         hedge_rate = FORWARD_QUOTES[row.settlement_date]
-        hedge_usd = row.amount_gbp * hedge_rate
+        spot_usd = row.amount_gbp * spot_rate
+        locked_usd = row.amount_gbp * hedge_rate
+        hedge_usd = locked_usd - spot_usd
         records.append(
             {
                 "strategy": "Forward",
@@ -61,10 +63,10 @@ def evaluate_forward(receipts: pd.DataFrame, forecast_df: pd.DataFrame, scenario
                 "settlement_date": row.settlement_date,
                 "gbp_receipt": row.amount_gbp,
                 "spot_rate": spot_rate,
-                "spot_usd": row.amount_gbp * spot_rate,
+                "spot_usd": spot_usd,
                 "hedge_usd": hedge_usd,
                 "premium_usd": 0.0,
-                "net_usd": hedge_usd,
+                "net_usd": spot_usd + hedge_usd,
             }
         )
     return _build_result_frame(records)
@@ -131,5 +133,5 @@ def summarize_strategy(result_df: pd.DataFrame) -> dict[str, float]:
         "future_receipts_usd": float(result_df["net_usd"].sum()),
         "down_payment_usd": float(DOWN_PAYMENT_USD),
         "total_usd": float(result_df["net_usd"].sum() + DOWN_PAYMENT_USD),
-        "hedge_component_usd": float(result_df["hedge_usd"].sum() - result_df["premium_usd"].sum()),
+        "hedge_component_usd": float((result_df["net_usd"] - result_df["spot_usd"]).sum()),
     }

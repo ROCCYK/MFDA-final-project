@@ -104,51 +104,43 @@ with st.sidebar:
         """
     )
 
-forecast_df = build_forecast_frame(spot_history, target_dates, forecast_method)
+forecast_df = build_forecast_frame(
+    spot_history,
+    target_dates,
+    forecast_method,
+    anchor_date=CASE_BASE_DATE,
+    anchor_spot=CURRENT_SPOT,
+)
 
-strategy_results = {
-    "Unhedged": evaluate_unhedged(receipts, forecast_df, scenario),
-    "Forward": evaluate_forward(receipts, forecast_df, scenario),
-    "Futures": evaluate_futures(receipts, forecast_df, scenario),
-    "Options": evaluate_options(receipts, forecast_df, scenario, strike),
+strategy_evaluators = {
+    "Unhedged": lambda scenario_name: evaluate_unhedged(receipts, forecast_df, scenario_name),
+    "Forward": lambda scenario_name: evaluate_forward(receipts, forecast_df, scenario_name),
+    "Futures": lambda scenario_name: evaluate_futures(receipts, forecast_df, scenario_name),
+    "Options": lambda scenario_name: evaluate_options(receipts, forecast_df, scenario_name, strike),
 }
 
-summary_rows = []
-for strategy_name, result_df in strategy_results.items():
-    summary = summarize_strategy(result_df)
-    summary_rows.append(
-        {
-            "strategy": strategy_name,
-            "scenario": scenario,
-            "future_receipts_usd": summary["future_receipts_usd"],
-            "down_payment_usd": summary["down_payment_usd"],
-            "total_usd": summary["total_usd"],
-            "hedge_component_usd": summary["hedge_component_usd"],
-        }
-    )
-
-base_summaries = []
+scenario_summary_rows = []
+strategy_results: dict[str, pd.DataFrame] = {}
 for scenario_name in SCENARIO_ORDER:
-    for strategy_name in strategy_results:
-        if strategy_name == "Unhedged":
-            scenario_df = evaluate_unhedged(receipts, forecast_df, scenario_name)
-        elif strategy_name == "Forward":
-            scenario_df = evaluate_forward(receipts, forecast_df, scenario_name)
-        elif strategy_name == "Futures":
-            scenario_df = evaluate_futures(receipts, forecast_df, scenario_name)
-        else:
-            scenario_df = evaluate_options(receipts, forecast_df, scenario_name, strike)
-        summary = summarize_strategy(scenario_df)
-        base_summaries.append(
+    for strategy_name, evaluator in strategy_evaluators.items():
+        result_df = evaluator(scenario_name)
+        if scenario_name == scenario:
+            strategy_results[strategy_name] = result_df
+        summary = summarize_strategy(result_df)
+        scenario_summary_rows.append(
             {
                 "strategy": strategy_name,
                 "scenario": scenario_name,
+                "future_receipts_usd": summary["future_receipts_usd"],
+                "down_payment_usd": summary["down_payment_usd"],
                 "total_usd": summary["total_usd"],
+                "hedge_component_usd": summary["hedge_component_usd"],
             }
         )
 
-summary_df = pd.DataFrame(summary_rows)
-scenario_comparison_df = pd.DataFrame(base_summaries)
+scenario_summary_df = pd.DataFrame(scenario_summary_rows)
+summary_df = scenario_summary_df.loc[scenario_summary_df["scenario"] == scenario].copy()
+scenario_comparison_df = scenario_summary_df[["strategy", "scenario", "total_usd"]].copy()
 recommendation_title, recommendation_detail = build_recommendation(scenario_comparison_df)
 scenario_recommendations = build_scenario_recommendations(scenario_comparison_df)
 
@@ -468,11 +460,7 @@ st.subheader("Combined Summary Table")
 st.caption(
     "This table combines every strategy across low, base, and high scenarios so you can compare total USD proceeds, hedge impact, and the current scenario winner in one place."
 )
-combined_summary_df = scenario_comparison_df.merge(
-    summary_df[["strategy", "future_receipts_usd", "down_payment_usd", "hedge_component_usd"]],
-    on="strategy",
-    how="left",
-)
+combined_summary_df = scenario_summary_df.copy()
 best_total_by_scenario = combined_summary_df.groupby("scenario")["total_usd"].transform("max")
 combined_summary_df["is_best"] = combined_summary_df["total_usd"].eq(best_total_by_scenario).map(
     lambda is_best: "Yes" if is_best else ""
@@ -529,14 +517,78 @@ for column, row in zip(recommendation_columns, scenario_recommendations.itertupl
 
 if show_notes:
     st.subheader("Formulas and Teaching Notes")
+    st.caption("These formulas match the calculations used by the app for forecasts, hedges, and summary totals.")
+
     st.markdown(
         """
-        - **Unhedged:** future USD proceeds = `GBP receipt x forecast spot`.
-        - **Forward hedge:** future USD proceeds = `GBP receipt x quoted forward rate`.
-        - **Futures hedge:** short GBP futures because Waffle will receive pounds later and loses when GBP weakens.
-        - **Futures P/L approximation:** `(entry futures - settlement spot) x hedged GBP`.
-        - **Options hedge:** buy GBP puts to create a floor while preserving upside from stronger GBP.
-        - **Options net proceeds:** `spot conversion + put payoff - premium`.
-        - The May receipt cannot be perfectly matched with futures because `GBP700,000 / 62,500 = 11.2` contracts, so the app rounds to the nearest whole contract and shows the residual exposure.
+        **Variable legend**
+        - `Q_t`: GBP receipt on settlement date `t`
+        - `S_t`: forecast spot rate on settlement date `t` in USD/GBP
+        - `F_t`: quoted forward rate in USD/GBP
+        - `f_t`: quoted futures price in USD/GBP
+        - `K`: option strike price in USD/GBP
+        - `p_t`: put premium in USD/GBP
+        - `d`: calendar days from the case date, April 20, 2026, to settlement
+        - `N_t`: rounded number of futures contracts
+        - `H_t`: GBP amount hedged with futures
         """
     )
+
+    st.markdown("**Forecasting formulas**")
+    st.markdown("Moving Average method uses the last 10 spot observations and the last 20 daily returns.")
+    st.latex(r"\bar{S} = \frac{1}{n}\sum_{i=1}^{n} S_i")
+    st.latex(r"r_i = \frac{S_i}{S_{i-1}} - 1,\qquad \sigma_r = \operatorname{std}(r_i)")
+    st.latex(r"S_t^{\mathrm{base}} = \bar{S}")
+    st.latex(r"S_t^{\mathrm{low}} = \bar{S} - \bar{S}\sigma_r\sqrt{d}")
+    st.latex(r"S_t^{\mathrm{high}} = \bar{S} + \bar{S}\sigma_r\sqrt{d}")
+
+    st.markdown("Time Trend method fits a linear regression through the full historical sample.")
+    st.latex(r"S_i = a + bi + \varepsilon_i")
+    st.latex(r"\hat{S}_t^{\mathrm{base}} = a + b\,i_t")
+    st.latex(r"\sigma_{\varepsilon} = \operatorname{std}(\varepsilon_i)")
+    st.latex(r"\mathrm{band}_t = \sigma_{\varepsilon}\left(1 + \frac{d}{60}\right)")
+    st.latex(r"S_t^{\mathrm{low}} = \hat{S}_t^{\mathrm{base}} - \mathrm{band}_t")
+    st.latex(r"S_t^{\mathrm{high}} = \hat{S}_t^{\mathrm{base}} + \mathrm{band}_t")
+
+    st.markdown("Scenario Distribution method uses the last 30 observations and compounds return scenarios forward.")
+    st.latex(r"\mu_r = \operatorname{mean}(r_i),\qquad q_{20} = \operatorname{20th\ percentile}(r_i),\qquad q_{80} = \operatorname{80th\ percentile}(r_i)")
+    st.latex(r"S_t^{\mathrm{low}} = S_0(1 + q_{20})^d")
+    st.latex(r"S_t^{\mathrm{base}} = S_0(1 + \mu_r)^d")
+    st.latex(r"S_t^{\mathrm{high}} = S_0(1 + q_{80})^d")
+
+    st.markdown(
+        """
+        After each forecast is built, the app enforces:
+        - positive rates only, with a floor of `0.01`
+        - ordered scenarios so `low <= base <= high`
+        """
+    )
+
+    st.markdown("**Strategy cash-flow formulas**")
+    st.markdown("Unhedged strategy:")
+    st.latex(r"\mathrm{spot\_usd}_t = Q_tS_t")
+    st.latex(r"\mathrm{net\_usd}_t = \mathrm{spot\_usd}_t")
+
+    st.markdown("Forward hedge:")
+    st.latex(r"\mathrm{locked\_usd}_t = Q_tF_t")
+    st.latex(r"\mathrm{hedge\_effect}_t = Q_t(F_t - S_t)")
+    st.latex(r"\mathrm{net\_usd}_t = Q_tS_t + Q_t(F_t - S_t) = Q_tF_t")
+
+    st.markdown("Futures hedge:")
+    st.latex(r"N_t = \operatorname{round}\left(\frac{Q_t}{62{,}500}\right)")
+    st.latex(r"H_t = N_t \times 62{,}500")
+    st.latex(r"\mathrm{residual\_gbp}_t = Q_t - H_t")
+    st.latex(r"\mathrm{futures\_P/L}_t = (f_t - S_t)H_t")
+    st.latex(r"\mathrm{net\_usd}_t = Q_tS_t + (f_t - S_t)H_t")
+
+    st.markdown("Options hedge using a GBP put:")
+    st.latex(r"\mathrm{put\ payoff}_t = \max(K - S_t, 0)\times Q_t")
+    st.latex(r"\mathrm{premium\_usd}_t = p_tQ_t")
+    st.latex(r"\mathrm{net\_usd}_t = Q_tS_t + \max(K - S_t, 0)Q_t - p_tQ_t")
+
+    st.markdown("**Summary formulas shown in the app**")
+    st.latex(r"\mathrm{future\_receipts\_usd} = \sum_t \mathrm{net\_usd}_t")
+    st.latex(r"\mathrm{down\_payment\_usd} = 500{,}000 \times 1.38 = 690{,}000")
+    st.latex(r"\mathrm{total\_usd} = \mathrm{down\_payment\_usd} + \sum_t \mathrm{net\_usd}_t")
+    st.latex(r"\mathrm{hedge\_component\_usd} = \sum_t (\mathrm{net\_usd}_t - \mathrm{spot\_usd}_t)")
+    st.latex(r"\mathrm{best\ strategy\ in\ scenario} = \arg\max_{\mathrm{strategy}}(\mathrm{total\_usd})")
