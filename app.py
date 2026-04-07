@@ -464,6 +464,53 @@ for tab, (strategy_name, result_df) in zip(tabs, strategy_results.items()):
             detail_view[column] = detail_view[column].map(format_usd)
         st.dataframe(detail_view, use_container_width=True, hide_index=True)
 
+st.subheader("Combined Summary Table")
+st.caption(
+    "This table combines every strategy across low, base, and high scenarios so you can compare total USD proceeds, hedge impact, and the current scenario winner in one place."
+)
+combined_summary_df = scenario_comparison_df.merge(
+    summary_df[["strategy", "future_receipts_usd", "down_payment_usd", "hedge_component_usd"]],
+    on="strategy",
+    how="left",
+)
+best_total_by_scenario = combined_summary_df.groupby("scenario")["total_usd"].transform("max")
+combined_summary_df["is_best"] = combined_summary_df["total_usd"].eq(best_total_by_scenario).map(
+    lambda is_best: "Yes" if is_best else ""
+)
+scenario_display = {"low": "Low", "base": "Base", "high": "High"}
+combined_summary_view = combined_summary_df.copy()
+combined_summary_view["scenario"] = combined_summary_view["scenario"].map(scenario_display)
+combined_summary_view["future_receipts_usd"] = combined_summary_view["future_receipts_usd"].map(format_usd)
+combined_summary_view["down_payment_usd"] = combined_summary_view["down_payment_usd"].map(format_usd)
+combined_summary_view["hedge_component_usd"] = combined_summary_view["hedge_component_usd"].map(format_usd)
+combined_summary_view["total_usd"] = combined_summary_view["total_usd"].map(format_usd)
+combined_summary_view = combined_summary_view.rename(
+    columns={
+        "scenario": "scenario",
+        "strategy": "strategy",
+        "future_receipts_usd": "future_receipts_usd",
+        "down_payment_usd": "down_payment_usd",
+        "hedge_component_usd": "hedge_component_usd",
+        "total_usd": "total_usd",
+        "is_best": "best_in_scenario",
+    }
+)
+st.dataframe(
+    combined_summary_view[
+        [
+            "scenario",
+            "strategy",
+            "future_receipts_usd",
+            "down_payment_usd",
+            "hedge_component_usd",
+            "total_usd",
+            "best_in_scenario",
+        ]
+    ],
+    use_container_width=True,
+    hide_index=True,
+)
+
 st.subheader("Recommendation")
 st.success(recommendation_title)
 st.write(recommendation_detail)
