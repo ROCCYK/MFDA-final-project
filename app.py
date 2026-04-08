@@ -529,32 +529,100 @@ if show_notes:
         - `K`: option strike price in USD/GBP
         - `p_t`: put premium in USD/GBP
         - `d`: calendar days from the case date, April 20, 2026, to settlement
+        - `i_last`: observation index of the last data point in the regression (zero-based count of historical rows)
+        - `i_t`: projected observation index for settlement date `t`, converting calendar days to trading days
         - `N_t`: rounded number of futures contracts
         - `H_t`: GBP amount hedged with futures
         """
     )
 
     st.markdown("**Forecasting formulas**")
+
     st.markdown("Moving Average method uses the last 10 spot observations and the last 20 daily returns.")
     st.latex(r"\bar{S} = \frac{1}{n}\sum_{i=1}^{n} S_i")
     st.latex(r"r_i = \frac{S_i}{S_{i-1}} - 1,\qquad \sigma_r = \operatorname{std}(r_i)")
     st.latex(r"S_t^{\mathrm{base}} = \bar{S}")
     st.latex(r"S_t^{\mathrm{low}} = \bar{S} - \bar{S}\sigma_r\sqrt{d}")
     st.latex(r"S_t^{\mathrm{high}} = \bar{S} + \bar{S}\sigma_r\sqrt{d}")
+    st.code(
+        """\
+# src/forecasting.py — moving_average_forecast()
+recent_spots = history["spot"].tail(10)
+base_level   = float(recent_spots.mean())
 
-    st.markdown("Time Trend method fits a linear regression through the full historical sample.")
+returns   = history["spot"].pct_change().dropna().tail(20)
+daily_vol = float(returns.std(ddof=1))
+
+horizon_days = (target - anchor_date).days
+vol_band     = base_level * daily_vol * np.sqrt(horizon_days)
+
+scenarios = {
+    "base": base_level,
+    "low":  base_level - vol_band,
+    "high": base_level + vol_band,
+}""",
+        language="python",
+    )
+
+    st.markdown("Time Trend method fits a linear regression through the full historical sample. Because the x-axis is observation count (not calendar days), the target index converts the calendar-day horizon to trading days using a 5/7 ratio.")
     st.latex(r"S_i = a + bi + \varepsilon_i")
+    st.latex(r"i_t = i_{\mathrm{last}} + \operatorname{round}\!\left(d \times \tfrac{5}{7}\right)")
     st.latex(r"\hat{S}_t^{\mathrm{base}} = a + b\,i_t")
     st.latex(r"\sigma_{\varepsilon} = \operatorname{std}(\varepsilon_i)")
     st.latex(r"\mathrm{band}_t = \sigma_{\varepsilon}\left(1 + \frac{d}{60}\right)")
     st.latex(r"S_t^{\mathrm{low}} = \hat{S}_t^{\mathrm{base}} - \mathrm{band}_t")
     st.latex(r"S_t^{\mathrm{high}} = \hat{S}_t^{\mathrm{base}} + \mathrm{band}_t")
+    st.code(
+        """\
+# src/forecasting.py — trend_forecast()
+x = np.arange(len(history))
+y = history["spot"].to_numpy()
+slope, intercept = np.polyfit(x, y, deg=1)
+
+fitted       = intercept + slope * x
+residual_std = float(np.std(y - fitted, ddof=1))
+
+last_index           = len(history) - 1
+horizon_days         = (target - anchor_date).days
+horizon_trading_days = max(round(horizon_days * 5 / 7), 1)
+target_index         = last_index + horizon_trading_days
+
+base_level = float(intercept + slope * target_index)
+band       = residual_std * (1 + horizon_days / 60)
+
+scenarios = {
+    "base": base_level,
+    "low":  base_level - band,
+    "high": base_level + band,
+}""",
+        language="python",
+    )
 
     st.markdown("Scenario Distribution method uses the last 30 observations and compounds return scenarios forward.")
     st.latex(r"\mu_r = \operatorname{mean}(r_i),\qquad q_{20} = \operatorname{20th\ percentile}(r_i),\qquad q_{80} = \operatorname{80th\ percentile}(r_i)")
     st.latex(r"S_t^{\mathrm{low}} = S_0(1 + q_{20})^d")
     st.latex(r"S_t^{\mathrm{base}} = S_0(1 + \mu_r)^d")
     st.latex(r"S_t^{\mathrm{high}} = S_0(1 + q_{80})^d")
+    st.code(
+        """\
+# src/forecasting.py — scenario_distribution_forecast()
+recent        = history.tail(30)
+current_spot  = float(recent["spot"].iloc[-1])
+returns       = recent["spot"].pct_change().dropna()
+
+mean_return   = float(returns.mean())
+low_quantile  = float(returns.quantile(0.2))
+high_quantile = float(returns.quantile(0.8))
+
+horizon_days = (target - anchor_date).days
+
+scenarios = {
+    "low":  current_spot * ((1 + low_quantile)  ** horizon_days),
+    "base": current_spot * ((1 + mean_return)   ** horizon_days),
+    "high": current_spot * ((1 + high_quantile) ** horizon_days),
+}""",
+        language="python",
+    )
 
     st.markdown(
         """
@@ -563,16 +631,42 @@ if show_notes:
         - ordered scenarios so `low <= base <= high`
         """
     )
+    st.code(
+        """\
+# src/forecasting.py — _clip_and_sort()
+ordered = sorted([low, base, high])
+low  = max(ordered[0], 0.01)
+base = max(ordered[1], 0.01)
+high = max(ordered[2], 0.01)""",
+        language="python",
+    )
 
     st.markdown("**Strategy cash-flow formulas**")
+
     st.markdown("Unhedged strategy:")
     st.latex(r"\mathrm{spot\_usd}_t = Q_tS_t")
     st.latex(r"\mathrm{net\_usd}_t = \mathrm{spot\_usd}_t")
+    st.code(
+        """\
+# src/strategies.py — evaluate_unhedged()
+spot_usd = amount_gbp * spot_rate
+net_usd  = spot_usd""",
+        language="python",
+    )
 
     st.markdown("Forward hedge:")
     st.latex(r"\mathrm{locked\_usd}_t = Q_tF_t")
     st.latex(r"\mathrm{hedge\_effect}_t = Q_t(F_t - S_t)")
     st.latex(r"\mathrm{net\_usd}_t = Q_tS_t + Q_t(F_t - S_t) = Q_tF_t")
+    st.code(
+        """\
+# src/strategies.py — evaluate_forward()
+spot_usd   = amount_gbp * spot_rate
+locked_usd = amount_gbp * forward_rate
+hedge_usd  = locked_usd - spot_usd   # == Q_t * (F_t - S_t)
+net_usd    = spot_usd + hedge_usd    # == locked_usd""",
+        language="python",
+    )
 
     st.markdown("Futures hedge:")
     st.latex(r"N_t = \operatorname{round}\left(\frac{Q_t}{62{,}500}\right)")
@@ -580,11 +674,34 @@ if show_notes:
     st.latex(r"\mathrm{residual\_gbp}_t = Q_t - H_t")
     st.latex(r"\mathrm{futures\_P/L}_t = (f_t - S_t)H_t")
     st.latex(r"\mathrm{net\_usd}_t = Q_tS_t + (f_t - S_t)H_t")
+    st.code(
+        """\
+# src/strategies.py — evaluate_futures()
+contracts    = max(1, round(amount_gbp / 62_500))
+hedged_gbp   = contracts * 62_500
+residual_gbp = amount_gbp - hedged_gbp
+
+spot_usd   = amount_gbp * spot_rate
+futures_pl = (futures_price - spot_rate) * hedged_gbp   # == (f_t - S_t) * H_t
+net_usd    = spot_usd + futures_pl""",
+        language="python",
+    )
 
     st.markdown("Options hedge using a GBP put:")
     st.latex(r"\mathrm{put\ payoff}_t = \max(K - S_t, 0)\times Q_t")
     st.latex(r"\mathrm{premium\_usd}_t = p_tQ_t")
     st.latex(r"\mathrm{net\_usd}_t = Q_tS_t + \max(K - S_t, 0)Q_t - p_tQ_t")
+    st.code(
+        """\
+# src/strategies.py — evaluate_options()
+intrinsic_value = max(strike - spot_rate, 0.0)
+option_payoff   = intrinsic_value * amount_gbp
+premium_usd     = put_premium * amount_gbp
+
+spot_usd = amount_gbp * spot_rate
+net_usd  = spot_usd + option_payoff - premium_usd""",
+        language="python",
+    )
 
     st.markdown("**Summary formulas shown in the app**")
     st.latex(r"\mathrm{future\_receipts\_usd} = \sum_t \mathrm{net\_usd}_t")
@@ -592,3 +709,12 @@ if show_notes:
     st.latex(r"\mathrm{total\_usd} = \mathrm{down\_payment\_usd} + \sum_t \mathrm{net\_usd}_t")
     st.latex(r"\mathrm{hedge\_component\_usd} = \sum_t (\mathrm{net\_usd}_t - \mathrm{spot\_usd}_t)")
     st.latex(r"\mathrm{best\ strategy\ in\ scenario} = \arg\max_{\mathrm{strategy}}(\mathrm{total\_usd})")
+    st.code(
+        """\
+# src/strategies.py — summarize_strategy()
+future_receipts_usd = result_df["net_usd"].sum()
+down_payment_usd    = 690_000  # 500_000 * 1.38
+total_usd           = future_receipts_usd + down_payment_usd
+hedge_component_usd = (result_df["net_usd"] - result_df["spot_usd"]).sum()""",
+        language="python",
+    )
