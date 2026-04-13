@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from datetime import date
 
 import pandas as pd
@@ -77,7 +78,7 @@ def evaluate_futures(receipts: pd.DataFrame, forecast_df: pd.DataFrame, scenario
     for row in receipts.itertuples(index=False):
         spot_rate = _receipt_spot(forecast_df, row.settlement_date, scenario)
         futures_info = FUTURES_QUOTES[row.settlement_date]
-        contracts = max(1, round(row.amount_gbp / CONTRACT_SIZE_GBP))
+        contracts = max(1, math.floor(row.amount_gbp / CONTRACT_SIZE_GBP))
         hedged_gbp = contracts * CONTRACT_SIZE_GBP
         residual_gbp = row.amount_gbp - hedged_gbp
         futures_pl = (futures_info["price"] - spot_rate) * hedged_gbp

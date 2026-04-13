@@ -104,7 +104,7 @@ FORWARD_QUOTES = {
 
 FUTURES_QUOTES = {
     date(2026, 5, 20): {"contract_month": "June", "price": 1.387},
-    date(2026, 7, 20): {"contract_month": "July", "price": 1.393},
+    date(2026, 7, 20): {"contract_month": "August", "price": 1.399},
 }
 
 OPTION_QUOTES = {

@@ -63,20 +63,20 @@ def moving_average_forecast(
 
 
 def trend_forecast(history: pd.DataFrame, targets: list[date]) -> dict[date, dict[str, float]]:
-    x = np.arange(len(history))
+    min_date = history["date"].min()
+    x = (history["date"] - min_date).dt.days.to_numpy()
     y = history["spot"].to_numpy()
     slope, intercept = np.polyfit(x, y, deg=1)
     fitted = intercept + slope * x
     residual_std = float(np.std(y - fitted, ddof=1)) if len(history) > 2 else 0.0
     anchor_date = history["date"].max().date()
-    last_index = len(history) - 1
+    last_x = int(x[-1])
 
     forecasts: dict[date, dict[str, float]] = {}
     for target in targets:
         horizon_days = max((target - anchor_date).days, 1)
-        horizon_trading_days = max(round(horizon_days * 5 / 7), 1)
-        target_index = last_index + horizon_trading_days
-        base_level = float(intercept + slope * target_index)
+        target_x = last_x + horizon_days
+        base_level = float(intercept + slope * target_x)
         band = residual_std * (1 + horizon_days / 60)
         forecasts[target] = _clip_and_sort(
             {
